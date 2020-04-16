@@ -42,7 +42,7 @@ def batch_iter(data, batch_size, shuffle=False):
         # examples = sorted(examples, key=lambda e: len(e[0]), reverse=True)
         src_sents = [e[0] for e in examples]
         tgt = [e[1] for e in examples]
-        src_sents = torch.cat(src_sents)
+        src_sents = torch.stack(src_sents)
         # tgt = torch.cat(tgt)
         yield src_sents, tgt
 

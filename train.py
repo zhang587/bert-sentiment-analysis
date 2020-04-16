@@ -55,16 +55,41 @@ class CNNClassifier(nn.Module):
 
     def forward(self, input):
         x_conv_out = self.cnn(input)
-        x_conv_out = x_conv_out.view(-1)
-        return F.sigmoid(self.linear(x_conv_out))
+        x_conv_out = x_conv_out.squeeze()
+        y_pred = torch.sigmoid(self.linear(x_conv_out))
+
+        return torch.cat((y_pred, 1-y_pred), dim=1)
+def train(x_train, y_train, batch_size=6, epoch=10):
+    
+    criterion = torch.nn.CrossEntropyLoss()
+    model = CNNClassifier(embed_size=768, kernel_size=5, num_filter=2)
+    optimizer = torch.optim.Adam(model.parameters())
+    while epoch > 0:
+        for sents, tgt in batch_iter(list(zip(x_train, y_train)), batch_size):
+            optimizer.zero_grad()
+            tgt = torch.tensor(tgt)
+            y_pred = model(sents) # (batch_size,)
+
+            loss = criterion(y_pred, tgt)
+            loss.backward()
+            optimizer.step()
+        epoch -= 1
+    return model
+
+model = train(x_train, y_train, batch_size=6)
+print(model.forward(x_test))
+    # clip gradient
+    # grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+
+    
+
+    # batch_losses_val = batch_loss.item()
+    # report_loss += batch_losses_val
+    # cum_loss += batch_losses_val
 
 
-cnn_ = CNNClassifier(embed_size=768, kernel_size=5, num_filter=2)
-for sents, tgt in batch_iter(list(zip(x_train, y_train)), 12):
-    print(type(sents), type(sents[0]))
-    # print(sents[0][0].shape)
-    # sents = torch.tensor(sents)
-    cnn_.forward(sents)
+
+
 # (12, 103, 768)
 # class LogisticModel(nn.Module):
 #     def __init__(self, embed_size):
