@@ -18,7 +18,7 @@ def Bert_Embedding():
 
     df_train = pd.read_csv('/Users/ziqunye/Documents/stanford/project/SentimentAnalysis/bert-sentiment-analysis/data/train.csv')
     df_test = pd.read_csv('/Users/ziqunye/Documents/stanford/project/SentimentAnalysis/bert-sentiment-analysis/data/test.csv')
-    training_data_size = 100
+    training_data_size = 200
     df_train = df_train.iloc[:training_data_size, :]
     df_test = df_test.iloc[:training_data_size, :]
     # you can experiment with more data to get a more realistic performance score. With a fewer datapoints the model tends to overfit
@@ -28,7 +28,6 @@ def Bert_Embedding():
 
     text_test = df_train['Text'].iloc[0:training_data_size].values
     y_test = df_train['Score'].iloc[0:training_data_size].values
-
 
     x_train = []
     for sentence in tqdm(text_train):
@@ -41,44 +40,46 @@ def Bert_Embedding():
 
 
 class CNNClassifier(nn.Module):
-    def __init__(self, embed_size, kernel_size, num_filter, p_dropout=0.):
+    def __init__(self, embed_size, kernel_size, num_filter, p_dropout=0.1):
         super(CNNClassifier, self).__init__()
         self.embed_size = embed_size
         self.kernel_size = kernel_size
         self.num_filter = num_filter
         
         self.cnn = CNN(embed_size, kernel_size, num_filter)
-        self.linear = nn.Linear(in_features=self.num_filter, out_features=1)
+        self.linear = nn.Linear(in_features=self.num_filter, out_features=2)
         self.dropout = nn.Dropout(p_dropout)
 
     def forward(self, input):
         x_conv_out = self.cnn(input)
         x_conv_out = x_conv_out.squeeze()
-        y_pred = torch.sigmoid(self.dropout(self.linear(x_conv_out)))
-        return torch.cat((y_pred, 1-y_pred), dim=1)
+        output = self.dropout(self.linear(x_conv_out))
+        return output
 
 def train(x_train, y_train, batch_size=30, epoch=100):
     criterion = torch.nn.CrossEntropyLoss()
     model = CNNClassifier(embed_size=768, kernel_size=5, num_filter=5)
-    optimizer = torch.optim.Adam(model.parameters())
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
+    model.train(mode=True)
     while epoch > 0:
         epoch_loss = 0
         epoch_acc = 0
-        
         for sents, tgt in batch_iter(list(zip(x_train, y_train)), batch_size):
             this_batch_size = len(sents)
             optimizer.zero_grad()
             # tgt = torch.tensor(tgt)
-            y_pred = model(sents) # (batch_size,)
-            loss = criterion(y_pred, tgt)
+            pred = model.forward(sents) # (batch_size,)
+            loss = criterion(pred, tgt)
             loss.backward()
             optimizer.step()
             epoch_loss += loss * this_batch_size
-            epoch_acc += binary_accuracy(y_pred, tgt) * this_batch_size
+            y_pred = F.softmax(pred, dim=1)
+            epoch_acc += binary_accuracy(y_pred, tgt) 
         epoch -= 1
-        print('loss', epoch_loss/len(y_train), 'accurary', epoch_acc/len(y_train))
+        if epoch % 30 == 0:
+            print('loss', epoch_loss/len(y_train), 'accurary', epoch_acc/(200//batch_size+1))
     return model
-
 
 
 def binary_accuracy(preds, y):
@@ -88,22 +89,24 @@ def binary_accuracy(preds, y):
 
     #round predictions to the closest integer
     # rounded_preds = torch.round(torch.sigmoid(preds))
-    correct = (torch.round(preds[:,0]) == y).float() #convert into float for division 
+    # print(torch.round(preds[:,1]))
+    correct = (torch.round(preds[:,1]) == y).float() #convert into float for division 
     acc = correct.sum() / len(correct)
     return acc
 
 x_train, x_test, y_train, y_test = Bert_Embedding()
-model = train(x_train, y_train, batch_size=6)
+model = train(x_train, y_train)
 
 
-
-def evaluate(x_test, y_test):
+def evaluate(x_test, y_test, model):
     batch_size = len(x_test)
-    for sents, tgt in batch_iter(list(zip(x_test, y_test)), batch_size):
-        y_pred = model.forward(sents)
+    model.eval()
+    with torch.no_grad():
+        for sents, tgt in batch_iter(list(zip(x_test, y_test)), batch_size):
+            y_pred = model.forward(sents)
     return binary_accuracy(y_pred, tgt)
 
-print(evaluate(x_test, y_test))
+# print(evaluate(x_test, y_test))
 
 # print(model.forward(x_test))
     # clip gradient
