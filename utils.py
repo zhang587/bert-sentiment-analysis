@@ -23,7 +23,7 @@ def pad_sents(sents, embed_size=768, pad_token=0):
     return sents_padded
 
 
-def batch_iter(data, batch_size, shuffle=False):
+def batch_iter(data, batch_size, shuffle=False, pad_sent=True):
     """ Yield batches of source and target sentences reverse sorted by length (largest to smallest).
     @param data (list of (src_sent, tgt_sent)): list of tuples containing source and target sentence
     @param batch_size (int): batch size
@@ -38,11 +38,17 @@ def batch_iter(data, batch_size, shuffle=False):
     for i in range(batch_num):
         indices = index_array[i * batch_size: (i + 1) * batch_size]
         examples = [data[idx] for idx in indices]
-
+        
         # examples = sorted(examples, key=lambda e: len(e[0]), reverse=True)
         src_sents = [e[0] for e in examples]
         tgt = [e[1] for e in examples]
-        src_sents = torch.stack(src_sents)
-        # tgt = torch.cat(tgt)
+        if pad_sent:
+            src_sents = pad_sents(src_sents)
+            src_sents = torch.tensor(src_sents)
+            tgt = torch.tensor(tgt)
+            
+        # else:
+        #     src_sents = torch.stack(src_sents)
+  
         yield src_sents, tgt
 

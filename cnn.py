@@ -21,6 +21,7 @@ class CNN(nn.Module):
         self.kernel_size = kernel_size
         self.out_channel = num_filter
         self.conv1 = nn.Conv1d(self.in_channel, self.out_channel, self.kernel_size, bias=True)
+        
     #(12, 103, 768)
     #(12, 103 - kernel_size + 1, num_filter)
     # (12, 1, num_filter)
