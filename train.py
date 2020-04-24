@@ -9,8 +9,7 @@ from utils import pad_sents, batch_iter
 import math
 from cnn import CNN
 import sys
-
-
+from classifier import CNNClassifier
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def Bert_Embedding():
@@ -18,7 +17,7 @@ def Bert_Embedding():
 
     df_train = pd.read_csv('/Users/ziqunye/Documents/stanford/project/SentimentAnalysis/bert-sentiment-analysis/data/train.csv')
     df_test = pd.read_csv('/Users/ziqunye/Documents/stanford/project/SentimentAnalysis/bert-sentiment-analysis/data/test.csv')
-    training_data_size = 200
+    training_data_size = 100
     df_train = df_train.iloc[:training_data_size, :]
     df_test = df_test.iloc[:training_data_size, :]
     # you can experiment with more data to get a more realistic performance score. With a fewer datapoints the model tends to overfit
@@ -39,52 +38,36 @@ def Bert_Embedding():
     return x_train, x_test, y_train, y_test
 
 
-class CNNClassifier(nn.Module):
-    def __init__(self, embed_size, kernel_size, num_filter, p_dropout=0.1):
-        super(CNNClassifier, self).__init__()
-        self.embed_size = embed_size
-        self.kernel_size = kernel_size
-        self.num_filter = num_filter
-        
-        self.cnn = CNN(embed_size, kernel_size, num_filter)
-        self.linear = nn.Linear(in_features=self.num_filter, out_features=2)
-        self.dropout = nn.Dropout(p_dropout)
-
-    def forward(self, input):
-        x_conv_out = self.cnn(input)
-        x_conv_out = x_conv_out.squeeze()
-        output = self.dropout(self.linear(x_conv_out))
-        return output
-
-def train(x_train, y_train, x_dev, y_dev, batch_size=30, epoch=100, valid_niter=2,
-model_save_path ='/Users/ziqunye/Documents/stanford/project/SentimentAnalysis/bert-sentiment-analysis/model_cat/', 
-patience_target = 20, max_num_trial=100, lr_decay=0.5, max_epoch=2000):
-    criterion = torch.nn.CrossEntropyLoss()
-    model = CNNClassifier(embed_size=768, kernel_size=5, num_filter=5)
-
+def train(x_train, y_train, x_dev, y_dev, use_cuda = False, batch_size=30, epoch=100, valid_niter=2,
+model_save_path ='/Users/ziqunye/Documents/stanford/project/SentimentAnalysis/bert-sentiment-analysis/model_cat/best_model.pth.tar', 
+patience_target = 20, max_num_trial=100, lr_decay=0.5, max_epoch=2000): 
     num_trial = 0
-    train_iter = patience = cum_loss = report_loss = cum_tgt_words = report_tgt_words = 0
-    cum_examples = report_examples = epoch = valid_num = 0
+    train_iter = patience = 0
+    valid_num = 0
     hist_valid_scores = []
 
+    ### initialize the model
+    model = CNNClassifier(embed_size=768, kernel_size=5, num_filter=5)
 
+    ## set up device
+    device = torch.device("cuda:0" if use_cuda else "cpu")
+    print('use device: %s' % device, file=sys.stderr)
+    model = model.to(device)
+
+    ## optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
-
-    ## Parameter Initialization
-    # uniform_init = float(args['--uniform-init'])
-    # if np.abs(uniform_init) > 0.:
-    #     print('uniformly initialize parameters [-%f, +%f]' % (uniform_init, uniform_init), file=sys.stderr)
-    #     for p in model.parameters():
-    #         p.data.uniform_(-uniform_init, uniform_init)
-
+    ## crossentropy
+    criterion = torch.nn.CrossEntropyLoss()
+    ## turn the train mode on
     model.train(mode=True)
+
     while epoch > 0:
         epoch_loss = 0
         epoch_acc = 0
-        for sents, tgt in batch_iter(list(zip(x_train, y_train)), batch_size):
+        for sents, tgt in batch_iter(list(zip(x_train, y_train)), batch_size, device):
+            train_iter += 1
             this_batch_size = len(sents)
             optimizer.zero_grad()
-            # tgt = torch.tensor(tgt)
             pred = model.forward(sents) # (batch_size,)
             loss = criterion(pred, tgt)
             loss.backward()
@@ -92,71 +75,72 @@ patience_target = 20, max_num_trial=100, lr_decay=0.5, max_epoch=2000):
             epoch_loss += loss * this_batch_size
             y_pred = F.softmax(pred, dim=1)
             epoch_acc += binary_accuracy(y_pred, tgt) 
-            # print('I am here')
-            # # perform validation
-            # if train_iter % valid_niter == 0:
-            #     # print('epoch %d, iter %d, cum. loss %.2f, cum. ppl %.2f cum. examples %d' % (epoch, train_iter,
-            #     #                                                                          cum_loss / cum_examples,
-            #     #                                                                          np.exp(cum_loss / cum_tgt_words),
-            #     #                                                                          cum_examples), file=sys.stderr)
 
-            #     cum_loss = cum_examples = cum_tgt_words = 0.
-            #     valid_num += 1
+            # perform validation
+            if train_iter % valid_niter == 0:
+                print('train_iter and valid_niter', train_iter, valid_niter)
+                # print('epoch %d, iter %d, cum. loss %.2f, cum. ppl %.2f cum. examples %d' % (epoch, train_iter,
+                #                                                                          cum_loss / cum_examples,
+                #                                                                          np.exp(cum_loss / cum_tgt_words),
+                #                                                                          cum_examples), file=sys.stderr)
 
-            #     # print('begin validation ...', file=sys.stderr)
+                # cum_loss = cum_examples = cum_tgt_words = 0.
+                valid_num += 1
 
-            #     # compute dev. ppl and bleu
-            #     dev_f1, dev_precision, dev_recall, dev_accuracy = (
-            #         evaluate_F1(model, x_dev, y_dev, batch_size=batch_size)
-            #         )  # dev batch size can be a bit larger
-            #     valid_metric = dev_f1
+                # print('begin validation ...', file=sys.stderr)
 
-            #     print('validation: iter %d, dev. f1 %f, dev. precision %f, dev. recall %f, dev. accuracy %f' \
-            #         % (train_iter, dev_f1, dev_precision, dev_recall, dev_accuracy), file=sys.stderr)
+                # compute dev. F1, precision, recall and accuracy
+                dev_f1, dev_precision, dev_recall, dev_accuracy = (
+                    evaluate_F1(model, x_dev, y_dev, device, batch_size=batch_size)
+                    )  # dev batch size can be a bit larger
+                valid_metric = dev_f1
 
-            #     is_better = len(hist_valid_scores) == 0 or valid_metric > max(hist_valid_scores)
-            #     hist_valid_scores.append(valid_metric)
+                print('validation: iter %d, dev. f1 %f, dev. precision %f, dev. recall %f, dev. accuracy %f' \
+                    % (train_iter, dev_f1, dev_precision, dev_recall, dev_accuracy), file=sys.stderr)
 
-            #     if is_better:
-            #         patience = 0
-            #         print('save currently the best model to [%s]' % model_save_path, file=sys.stderr)
-            #         model.save(model_save_path)
+                is_better = len(hist_valid_scores) == 0 or valid_metric > max(hist_valid_scores)
+                hist_valid_scores.append(valid_metric)
 
-            #         # also save the optimizers' state
-            #         torch.save(optimizer.state_dict(), model_save_path + '.optim')
-            #     elif patience < patience_target:
-            #         patience += 1
-            #         print('hit patience %d' % patience, file=sys.stderr)
+                if is_better:
+                    patience = 0
+                    print('save currently the best model to [%s]' % model_save_path, file=sys.stderr)
+                    model.save(model_save_path)
 
-            #         if patience == patience_target:
-            #             num_trial += 1
-            #             print('hit #%d trial' % num_trial, file=sys.stderr)
-            #             if num_trial == max_num_trial:
-            #                 print('early stop!', file=sys.stderr)
-            #                 exit(0)
+                    # also save the optimizers' state
+                    torch.save(optimizer.state_dict(), model_save_path + '.optim')
+                elif patience < patience_target:
+                    patience += 1
+                    print('hit patience %d' % patience, file=sys.stderr)
 
-            #             # decay lr, and restore from previously best checkpoint
-            #             lr = optimizer.param_groups[0]['lr'] * float(lr_decay)
-            #             print('load previously best model and decay learning rate to %f' % lr, file=sys.stderr)
+                    if patience == patience_target:
+                        num_trial += 1
+                        print('hit #%d trial' % num_trial, file=sys.stderr)
+                        if num_trial == max_num_trial:
+                            print('early stop!', file=sys.stderr)
+                            exit(0)
 
-            #             # load model
-            #             params = torch.load(model_save_path, map_location=lambda storage, loc: storage)
-            #             model.load_state_dict(params['state_dict'])
-    
+                        # decay lr, and restore from previously best checkpoint
+                        lr = optimizer.param_groups[0]['lr'] * float(lr_decay)
+                        print('load previously best model and decay learning rate to %f' % lr, file=sys.stderr)
 
-            #             print('restore parameters of the optimizers', file=sys.stderr)
-            #             optimizer.load_state_dict(torch.load(model_save_path + '.optim'))
+                        # load model
+                        params = torch.load(model_save_path, map_location=lambda storage, loc: storage)
+                        model.load_state_dict(params['state_dict'])
+                        model = model.to(device)
 
-            #             # set new lr
-            #             for param_group in optimizer.param_groups:
-            #                 param_group['lr'] = lr
+                        print('restore parameters of the optimizers', file=sys.stderr)
+                        optimizer.load_state_dict(torch.load(model_save_path + '.optim'))
 
-            #             # reset patience
-            #             patience = 0
+                        # set new lr
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = lr
 
-            # if epoch == int(max_epoch):
-            #     print('reached maximum number of epochs!', file=sys.stderr)
-            #     exit(0)
+                        # reset patience
+                        patience = 0
+
+            if epoch == int(max_epoch):
+                print('reached maximum number of epochs!', file=sys.stderr)
+                exit(0)
 
         epoch -= 1
 
@@ -179,7 +163,7 @@ def binary_accuracy(preds, y):
 
 
 
-def evaluate_F1(model, x_dev, y_dev, batch_size=32):
+def evaluate_F1(model, x_dev, y_dev, device, batch_size=32):
     """ Evaluate perplexity on dev sentences
     @param model (CNN): CNN Model
     @param dev_data (list of (src_sent, tgt_sent)): list of tuples containing source and target sentence
@@ -189,15 +173,12 @@ def evaluate_F1(model, x_dev, y_dev, batch_size=32):
     was_training = model.training
     model.eval()
 
-    cum_loss = 0.
-    cum_tgt_words = 0.
-    criterion = torch.nn.CrossEntropyLoss()
     tp_cum = tn_cum = fp_cum = fn_cum = 0
     # no_grad() signals backend to throw away all gradients
     with torch.no_grad():
-        for sents, y_true in batch_iter(list(zip(x_dev, y_dev)), batch_size):
+        for sents, y_true in batch_iter(list(zip(x_dev, y_dev)), batch_size, device=device):
             pred = model.forward(sents) # (batch_size,)
-            y_pred += F.softmax(pred, dim=1)
+            y_pred = torch.round(F.softmax(pred, dim=1)[:, 1])
             tp_cum += (y_true * y_pred).sum().to(torch.float32)
             tn_cum += ((1 - y_true) * (1 - y_pred)).sum().to(torch.float32)
             fp_cum += ((1 - y_true) * y_pred).sum().to(torch.float32)
@@ -212,9 +193,6 @@ def evaluate_F1(model, x_dev, y_dev, batch_size=32):
         model.train()
 
     return f1, precision, recall, accuracy
-
-
-
 
 x_train, x_test, y_train, y_test = Bert_Embedding()
 model = train(x_train, y_train, x_test, y_test)
@@ -253,7 +231,7 @@ def f1_loss(y_true:torch.Tensor, y_pred:torch.Tensor, is_training=False) -> torc
     precision = tp / (tp + fp + epsilon)
     recall = tp / (tp + fn + epsilon)
     
-    f1 = 2* (precision*recall) / (precision + recall + epsilon)
+    f1 = 2 * (precision*recall) / (precision + recall + epsilon)
     f1.requires_grad = is_training
     return f1
 # print(evaluate(x_test, y_test))
