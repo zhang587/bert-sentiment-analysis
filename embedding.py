@@ -1,150 +1,106 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-from transformers import *
-import numpy as np
-from highway import *
+import pandas as pd
 import torch
-import glove
+from torchtext import data
+
+from torchtext.data import Field, Dataset, Example
 
 
-def load_pre_trained_vector(self, target_vocab, matrix_len):
-    """
-    For each word in dataset’s vocabulary, we check if it is on GloVe’s vocabulary.
-    If it do it, we load its pre-trained word vector. Otherwise, we initialize a random vector.
-    """
-    matrix_len = len(target_vocab)
-    weights_matrix = np.zeros((matrix_len, 50))
-    words_found = 0
-    emb_dim = 3  # placeholder. this needs to be specified
+class GloveEmbeddings():
 
-    for i, word in enumerate(target_vocab):
-        try:
-            weights_matrix[i] = glove[word]
-            words_found += 1
-        except KeyError:
-            weights_matrix[i] = np.random.normal(scale=0.6, size=(emb_dim,))
+    @classmethod
+    def load_glove_embeddings(cls):
+        SEED = 1234
+        torch.manual_seed(SEED)
+        torch.backends.cudnn.deterministic = True
+
+        TEXT = data.Field(tokenize='spacy', include_lengths=True)
+        LABEL = data.LabelField(dtype=torch.float)
+        MAX_VOCAB_SIZE = 25_000
+
+        train_data = pd.read_csv('data/train.csv')[['Text', 'Score']].iloc[0:1000,:]
+        print("train data", train_data)
+        train_ds = DataFrameDataset(train_data, fields={'Text': TEXT, 'Score':  LABEL})
+
+        TEXT.build_vocab(train_ds,
+                         max_size=MAX_VOCAB_SIZE,
+                         vectors="glove.6B.50d",
+                         unk_init=torch.Tensor.normal_)
+
+        vocabs = LABEL.build_vocab(train_ds)
+        print("!", train_ds.Text)
+        print("train ds", torch.tensor(train_ds.Text))
+        print(vocabs)
+        print("type", type(vocabs))
+
+        train_dl = BatchWrapper(train_ds, "Text", [0,1])
+        print(train_dl, train_dl)
+
+GloveEmbeddings.load_glove_embeddings()
+
+class BatchWrapper:
+    def __init__(self, dl, x_var, y_vars):
+        self.dl, self.x_var, self.y_vars = dl, x_var, y_vars  # we pass in the list of attributes for x
+
+    def __iter__(self):
+        for batch in self.dl:
+            x = getattr(batch, self.x_var)  # we assume only one input in this wrapper
+
+            if self.y_vars is None:  # we will concatenate y into a single tensor
+                y = torch.cat([getattr(batch, feat).unsqueeze(1) for feat in self.y_vars], dim=1).float()
+            else:
+                y = torch.zeros((1))
+
+            yield (x, y)
+
+    def __len__(self):
+        return len(self.dl)
 
 
-def create_emb_layer(self, weights_matrix, non_trainable=False):
-    num_embeddings, embedding_dim = weights_matrix.size()
-    emb_layer = nn.Embedding(num_embeddings, embedding_dim)
-    emb_layer.load_state_dict({'weight': weights_matrix})
-    if non_trainable:
-        emb_layer.weight.requires_grad = False
+class DataFrameDataset(Dataset):
+    """Class for using pandas DataFrames as a datasource"""
 
-    return emb_layer, num_embeddings, embedding_dim
+    def __init__(self, examples, fields, filter_pred=None):
+        """
+        Create a dataset from a pandas dataframe of examples and Fields
+        Arguments:
+            examples pd.DataFrame: DataFrame of examples
+            fields {str: Field}: The Fields to use in this tuple. The
+                string is a field name, and the Field is the associated field.
+            filter_pred (callable or None): use only exanples for which
+                filter_pred(example) is true, or use all examples if None.
+                Default is None
+        """
+        self.examples = examples.apply(SeriesExample.fromSeries, args=(fields,), axis=1).tolist()
+        if filter_pred is not None:
+            self.examples = filter(filter_pred, self.examples)
+        self.fields = dict(fields)
+        # Unpack field tuples
+        for n, f in list(self.fields.items()):
+            if isinstance(n, tuple):
+                self.fields.update(zip(n, f))
+                del self.fields[n]
 
 
-class ToyNN(nn.Module):
-    """
-    We now create a neural network with an embedding layer as first layer (we load into it the weights matrix)
-    and a GRU layer. When doing a forward pass we must call first the embedding layer.
-    """
+class SeriesExample(Example):
+    """Class to convert a pandas Series to an Example"""
 
-    def __init__(self, weights_matrix, hidden_size, num_layers):
-        super(self).__init__()
-        self.embedding, num_embeddings, embedding_dim = create_emb_layer(weights_matrix, non_trainable=True)
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.gru = nn.GRU(embedding_dim, hidden_size, num_layers, batch_first=True)
+    @classmethod
+    def fromSeries(cls, data, fields):
+        return cls.fromdict(data.to_dict(), fields)
 
-    def forward(self, inp, hidden):
-        return self.gru(self.embedding(inp), hidden)
+    @classmethod
+    def fromdict(cls, data, fields):
+        ex = cls()
 
-    def init_hidden(self, batch_size): # not sure if this is needed?
-        pass
-        #return Variable(torch.zeros(self.num_layers, batch_size, self.hidden_size))
+        for key, field in fields.items():
+            if key not in data:
+                raise ValueError("Specified key {} was not found in "
+                                 "the input data".format(key))
+            if field is not None:
+                setattr(ex, key, field.preprocess(data[key]))
+            else:
+                setattr(ex, key, data[key])
 
-# class Embeddings:
-#     LAST_LAYER = 1
-#     LAST_4_LAYERS = 2
-#     def __init__(self):
-#         self._tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-#         self._bert_model = BertModel.from_pretrained('bert-base-uncased', output_hidden_states=True)
-#         self._bert_model.eval()
-#
-#     def tokenize(self, sentence):
-#         """
-#
-#         :param sentence: input sentence ['str']
-#         :return: tokenized sentence based on word piece model ['List']
-#         """
-#         marked_sentence = "[CLS] " + sentence + " [SEP]"
-#         tokenized_text = self._tokenizer.tokenize(marked_sentence)
-#         return tokenized_text
-#
-#     def get_bert_embeddings(self, sentence):
-#         """
-#
-#         :param sentence: input sentence ['str']
-#         :return: BERT pre-trained hidden states (list of torch tensors) ['List']
-#         """
-#         # Predict hidden states features for each layer
-#
-#         tokenized_text = self.tokenize(sentence)
-#         indexed_tokens = self._tokenizer.convert_tokens_to_ids(tokenized_text)
-#
-#         segments_ids = [0] * len(tokenized_text)
-#
-#         # Convert inputs to PyTorch tensors
-#         tokens_tensor = torch.tensor([indexed_tokens])
-#         segments_tensors = torch.tensor([segments_ids])
-#
-#         with torch.no_grad():
-#             encoded_layers = self._bert_model(tokens_tensor, token_type_ids=segments_tensors)
-#
-#         return encoded_layers[-1][0:12]
-#
-#     def sentence2vec(self, sentence, layers):
-#         """
-#
-#         :param sentence: input sentence ['str']
-#         :param layers: parameter to decide how word embeddings are obtained ['str]
-#             1. 'last' : last hidden state used to obtain word embeddings for sentence tokens
-#             2. 'last_4' : last 4 hidden states used to obtain word embeddings for sentence tokens
-#
-#         :return: sentence vector [List]
-#         """
-#         encoded_layers = self.get_bert_embeddings(sentence)
-#
-#         if layers == 1:
-#             # using the last layer embeddings
-#             token_embeddings = encoded_layers[-1]
-#             # summing the last layer vectors for each token
-#             sentence_embedding = torch.mean(token_embeddings, 1)
-#             return sentence_embedding.view(-1).tolist()
-#
-#         elif layers == 2:
-#             token_embeddings = []
-#             tokenized_text = self.tokenize(sentence)
-#
-#             batch_i = 0
-#             # For each token in the sentence...
-#             for token_i in range(len(tokenized_text)):
-#
-#                 # Holds 12 layers of hidden states for each token
-#                 hidden_layers = []
-#
-#                 # For each of the 12 layers...
-#                 for layer_i in range(len(encoded_layers)):
-#                     # Lookup the vector for `token_i` in `layer_i`
-#                     vec = encoded_layers[layer_i][batch_i][token_i]
-#
-#                     hidden_layers.append(list(vec.numpy()))
-#
-#                 token_embeddings.append(hidden_layers)
-#
-#             # using the last 4 layer embeddings
-#             token_vecs_sum = []
-#
-#             # For each token in the sentence...
-#             for token in token_embeddings:
-#                 # Sum the vectors from the last four layers.
-#                 sum_vec = np.sum(token[-4:], axis=0)
-#
-#                 # Use `sum_vec` to represent `token`.
-#                 token_vecs_sum.append(list(sum_vec))
-#
-#             # summing the last layer vectors for each token
-#             # sentence_embedding = np.mean(token_vecs_sum, axis=0)
-#             return token_vecs_sum#sentence_embedding.ravel().tolist()
+        return ex
